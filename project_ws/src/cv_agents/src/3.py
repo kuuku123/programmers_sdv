@@ -5,18 +5,16 @@ import rospy
 import numpy as np
 import math
 import tf
-
 import pickle
-import matplotlib.pyplot as plt
-from copy import deepcopy
 import rospkg
 import sys
 
 from scipy.interpolate import interp1d
-
-from visualization_msgs.msg import Marker
-from geometry_msgs.msg import Quaternion
+from copy import deepcopy
+from visualization_msgs.msg import Marker,MarkerArray
+from geometry_msgs.msg import Quaternion,Point
 from object_msgs.msg import Object
+from std_msgs.msg import Header,ColorRGBA
 
 import pickle
 import argparse
@@ -25,23 +23,30 @@ rospack = rospkg.RosPack()
 path = rospack.get_path("map_server")
 
 rn_id = dict()
-L = 2.6
-k = 0.5
+
 rn_id[5] = {
     'left': [18, 2, 11, 6, 13, 8, 15, 10, 26, 0]  # ego route
 }
 
-LANE_WIDTH = 2.6  # lane width [m]
-SHOW_ANIMATION = True # plot 으로 결과 보여줄지 말지
-COL_CHECK = 0.25 # collision check distance [m]
+L = 2.6 
+dt = 0.1
+
+k = 0.5  # control gain
 V_MAX = 20      # maximum velocity [m/s]
-ACC_MAX = 20 # maximum acceleration [m/ss]
-K_MAX = 4     # maximum curvature [1/m]
+ACC_MAX = 2000 # maximum acceleration [m/ss]
+K_MAX = 100000     # maximum curvature [1/m]
+
+TARGET_SPEED = 8 # target speed [m/s] 6
+LANE_WIDTH = 3.1  # lane width [m] 3.1
+
+COL_CHECK = 1.9 # collision check distance [m] 1.9
+
 MIN_T = 1 # minimum terminal time [s]
-MAX_T = 2 # maximum terminal time [s]
-DT_T = 0.2 # dt for terminal time [s] : MIN_T 에서 MAX_T 로 어떤 dt 로 늘려갈지를 나타냄
+MAX_T = 3 # maximum terminal time [s] 3
+DT_T = 0.5 # dt for terminal time [s] : MIN_T 에서 MAX_T 로 어떤 dt 로 늘려갈지를 나타냄
 DT = 0.1 # timestep for update
-TARGET_SPEED = 20.0 / 3.6 # target speed [m/s]
+
+# cost weights
 K_J = 0.1 # weight for jerk
 K_T = 0.1 # weight for terminal time
 K_D = 1.0 # weight for consistency
@@ -49,7 +54,55 @@ K_V = 1.0 # weight for getting to target speed
 K_LAT = 1.0 # weight for lateral direction
 K_LON = 1.0 # weight for longitudinal direction
 
+SIM_STEP = 100 # simulation step
+SHOW_ANIMATION = False # plot 으로 결과 보여줄지 말지
+
+# Vehicle parameters - plot 을 위한 파라미터
+LENGTH = 0.39  # [m]
+WIDTH = 0.19  # [m]
+BACKTOWHEEL = 0.1  # [m]
+WHEEL_LEN = 0.03  # [m]
+WHEEL_WIDTH = 0.02  # [m]
+TREAD = 0.07  # [m]
+WB = 0.22  # [m]
+
+# lateral planning 시 terminal position condition 후보  (양 차선 중앙)
 DF_SET = np.array([LANE_WIDTH/2, -LANE_WIDTH/2])
+
+
+def get_traj_msg(paths, opt_ind):
+    ma = MarkerArray()
+    for id, path in enumerate(paths):
+        m = Marker()
+        m.header.frame_id = "/map"
+        m.header.stamp = rospy.Time.now()
+        m.id = (id + 1) * 10
+        m.type = m.POINTS
+        m.lifetime.secs = 1
+        c = ColorRGBA()
+        if opt_ind == id:
+            m.scale.x = 0.5
+            m.scale.y = 0.5
+            m.scale.z = 0.5
+            c.r = 0 / 255.0
+            c.g = 0 / 255.0
+            c.b = 255 / 255.0
+            c.a = 1
+        else:
+            m.scale.x = 0.2
+            m.scale.y = 0.2
+            m.scale.z = 0.2
+            c.r = 255 / 255.0
+            c.g = 0 / 255.0
+            c.b = 0 / 255.0
+            c.a = 0.2
+        for x, y in zip(path.x, path.y):
+            p = Point()
+            p.x, p.y = x, y
+            m.points.append(p)
+            m.colors.append(c)
+        ma.markers.append(m)
+    return ma 
 
 def next_waypoint(x, y, mapx, mapy):
     closest_wp = get_closest_waypoints(x, y, mapx, mapy)
@@ -312,6 +365,7 @@ def calc_frenet_paths(si, si_d, si_dd, sf_d, sf_dd, di, di_d, di_dd, df_d, df_dd
             tfp.c_tot = K_LAT * tfp.c_lat + K_LON * tfp.c_lon
 
             frenet_paths.append(tfp)
+
     return frenet_paths
 
 def calc_global_paths(fplist, mapx, mapy, maps):
@@ -349,7 +403,7 @@ def collision_check(fp, obs, mapx, mapy, maps):
 
         d = [((_x - obs_xy[0]) ** 2 + (_y - obs_xy[1]) ** 2)
              for (_x, _y) in zip(fp.x, fp.y)]
-
+        
         collision = any([di <= COL_CHECK ** 2 for di in d])
 
         if collision:
@@ -363,16 +417,19 @@ def check_path(fplist, obs, mapx, mapy, maps):
     for i, _path in enumerate(fplist):
         acc_squared = [(abs(a_s**2 + a_d**2)) for (a_s, a_d) in zip(_path.s_dd, _path.d_dd)]
         if any([v > V_MAX for v in _path.s_d]):  # Max speed check
+            print("vlocity")
             continue
         elif any([acc > ACC_MAX**2 for acc in acc_squared]):
+            print("Accerlate")
             continue
         elif any([abs(kappa) > K_MAX for kappa in fplist[i].kappa]):  # Max curvature check
+            print("curvature")
             continue
         elif collision_check(_path, obs, mapx, mapy, maps):
+            print("collision")
             continue
 
         ok_ind.append(i)
-
     return [fplist[i] for i in ok_ind]
 
 
@@ -396,54 +453,8 @@ def frenet_optimal_planning(si, si_d, si_dd, sf_d, sf_dd, di, di_d, di_dd, df_d,
         _opt_ind
     except NameError:
         print(" No solution ! ")
+
     return fplist, _opt_ind
-
-
-def normalize_angle(angle):
-    while angle > np.pi:
-        angle -= 2.0 * np.pi
-
-    while angle < -np.pi:
-        angle += 2.0 * np.pi
-
-    return angle
-
-
-def stanley_control(x, y, yaw, v, map_xs, map_ys, map_yaws):
-    # find nearest point
-    min_dist = 1e9
-    min_index = 0
-    n_points = len(map_xs)
-
-    front_x = x + L * np.cos(yaw)
-    front_y = y + L * np.sin(yaw)
-
-    for i in range(n_points):
-        dx = front_x - map_xs[i]
-        dy = front_y - map_ys[i]
-
-        dist = np.sqrt(dx * dx + dy * dy)
-        if dist < min_dist:
-            min_dist = dist
-            min_index = i
-
-    # compute cte at front axle
-    map_x = map_xs[min_index]
-    map_y = map_ys[min_index]
-    map_yaw = map_yaws[min_index]
-    dx = map_x - front_x
-    dy = map_y - front_y
-
-    perp_vec = [np.cos(yaw + np.pi/2), np.sin(yaw + np.pi/2)]
-    cte = np.dot([dx, dy], perp_vec)
-
-    # control law
-    yaw_term = normalize_angle(map_yaw - yaw)
-    cte_term = np.arctan2(k*cte, v)
-
-    # steering
-    steer = yaw_term + cte_term
-    return steer
 def pi_2_pi(angle):
     return (angle + math.pi) % (2 * math.pi) - math.pi
 
@@ -543,6 +554,9 @@ def get_ros_msg(x, y, yaw, v, id):
     o.v = v
     o.L = m.scale.x
     o.W = m.scale.y
+   
+
+
 
     return {
         "object_msg": o,
@@ -550,6 +564,50 @@ def get_ros_msg(x, y, yaw, v, id):
         "quaternion": quat
     }
 
+def normalize_angle(angle): 
+    while angle > np.pi: 
+        angle -= 2.0 * np.pi 
+    while angle < -np.pi:
+        angle += 2.0 * np.pi
+
+    return angle
+
+
+def stanley_control(x, y, yaw, v, map_xs, map_ys, map_yaws):
+    # find nearest point
+    min_dist = 1e9
+    min_index = 0
+    n_points = len(map_xs)
+
+    front_x = x + L * np.cos(yaw)
+    front_y = y + L * np.sin(yaw)
+
+    for i in range(n_points):
+        dx = front_x - map_xs[i]
+        dy = front_y - map_ys[i]
+
+        dist = np.sqrt(dx * dx + dy * dy)
+        if dist < min_dist:
+            min_dist = dist
+            min_index = i
+
+    # compute cte at front axle
+    map_x = map_xs[min_index]
+    map_y = map_ys[min_index]
+    map_yaw = map_yaws[min_index]
+    dx = map_x - front_x
+    dy = map_y - front_y
+
+    perp_vec = [np.cos(yaw + np.pi/2), np.sin(yaw + np.pi/2)]
+    cte = np.dot([dx, dy], perp_vec)
+
+    # control law
+    yaw_term = normalize_angle(map_yaw - yaw)
+    cte_term = np.arctan2(k*cte, v)
+
+    # steering
+    steer = yaw_term + cte_term
+    return steer
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Spawn a CV agent')
@@ -558,15 +616,15 @@ if __name__ == "__main__":
     parser.add_argument("--route", "-r", type=int,
                         help="start index in road network. select in [1, 3, 5, 10]", default=5)
     parser.add_argument("--dir", "-d", type=str, default="left", help="direction to go: [left, straight, right]")
-    args,unknown =  parser.parse_known_args()
-
+    args, unknown = parser.parse_known_args()
     rospy.init_node("three_cv_agents_node_" + str(args.id))
 
     id = args.id
     tf_broadcaster = tf.TransformBroadcaster()
     marker_pub = rospy.Publisher("/objects/marker/car_" + str(id), Marker, queue_size=1)
     object_pub = rospy.Publisher("/objects/car_" + str(id), Object, queue_size=1)
-
+    line_pub = rospy.Publisher("/path",MarkerArray,queue_size=1)
+    
     start_node_id = args.route
     route_id_list = [start_node_id] + rn_id[start_node_id][args.dir]
 
@@ -588,56 +646,47 @@ if __name__ == "__main__":
 
     waypoints = {"x": wx, "y": wy, "yaw": wyaw}
 
-    target_speed = 20.0 / 3.6
+    target_speed = 80.0 / 3.6
     state = State(x=waypoints["x"][ind], y=waypoints["y"][ind], yaw=waypoints["yaw"][ind], v=0.1, dt=0.01)
-
-    r = rospy.Rate(100)
-    ai , steer = 1,0
-    kp = 0.5
-    kd = 0.0
-    ki = 0.000
-    int_error =0
-    dt = 0.1
 
     mapx = waypoints["x"]
     mapy = waypoints["y"]
-    print(len(mapx)) 
-    #cp1 = CarParked(x=45.4, y=31.7, yaw=-0.51, id=2)
-    #cp2 = CarParked(x=25.578, y=-9.773, yaw=2.65, id=3)
     obs1d, obs1s = get_frenet(45.4,31.7,mapx,mapy) 
     obs2d, obs2s = get_frenet(25.578,-9.773,mapx,mapy) 
     
     obs = np.array([[obs1d, obs1s],[obs2d,obs2s]])
-
+    
+    # get maps
     maps = np.zeros(mapx.shape)
     for i in range(len(mapx)-1):
         x = mapx[i]
         y = mapy[i]
-        sd = get_frenet(x,y,mapx,mapy)
+        sd = get_frenet(x, y, mapx, mapy)
         maps[i] = sd[0]
 
+    # get global position info. of static obstacles
     obs_global = np.zeros(obs.shape)
     for i in range(len(obs[:,0])):
         _s = obs[i,0]
         _d = obs[i,1]
         xy = get_cartesian(_s, _d, mapx, mapy, maps)
         obs_global[i] = xy[:-1]
-    
-    x = -LANE_WIDTH
-    y = 0
-    yaw = 90 * np.pi/180
-    v = 20.0 / 3.6
-    a = 0
-    s,d = get_frenet(x,y,mapx,mapy)
-    x,y,yaw_road = get_cartesian(s,d,mapx,mapy,maps)
-    yawi = yaw - yaw_road
 
-    
+    # 자챠량 관련 initial condition
+    x = waypoints["x"][0]
+    y = waypoints["y"][0]
+    yaw = waypoints["yaw"][0]
+    v = 0.1
+    a = 1
+
+    s, d = get_frenet(x, y, mapx, mapy);
+    x, y, yaw_road = get_cartesian(s, d, mapx, mapy, maps)
+    yawi = yaw - yaw_road
     # s 방향 초기조건
     si = s
     si_d = v*np.cos(yawi)
     si_dd = a*np.cos(yawi)
-    sf_d = TARGET_SPEED 
+    sf_d = TARGET_SPEED
     sf_dd = 0
 
     # d 방향 초기조건
@@ -648,29 +697,51 @@ if __name__ == "__main__":
     df_dd = 0
 
     opt_d = di
-    
-    
-    while not rospy.is_shutdown():
+
+    ai = 2
+    r = rospy.Rate(100)
+    kp = 0.4
+while not rospy.is_shutdown():
         # generate acceleration ai, and steering di
         # YOUR CODE HERE
+        
         path, opt_ind = frenet_optimal_planning(si, si_d, si_dd,
                                                 sf_d, sf_dd, di, di_d, di_dd, df_d, df_dd, obs, mapx, mapy, maps, opt_d)
+      
+
         # consistency cost를 위해 update
-        opt_d = path[opt_ind].d[-1]
-        print(state.v) 
-        error = target_speed- state.v
-        prev_error = error
-        diff_error = error - prev_error
-        int_error += error
-        ai = + kp * error + kd * diff_error/dt + ki * int_error
-         # update state with acc, delta
-        steer = stanley_control(state.x,state.y,state.yaw,state.v,path[opt_ind].x*10,path[opt_ind].y*10,path[opt_ind].yaw*10)
-        #steer = stanley_control(state.x,state.y,state.yaw,state.v,waypoints["x"],waypoints["y"],waypoints["yaw"])
+        
+        steer = stanley_control(state.x,state.y,state.yaw,state.v,path[opt_ind].x,path[opt_ind].y,path[opt_ind].yaw)
+
+        #steer2 = stanley_control(state.x,state.y,state.yaw,state.v,waypoints["x"],waypoints["y"],waypoints["yaw"])
+        error = target_speed - state.v
+        ai = kp * error
+
+
+        # update state with acc, delta
         state.update(ai, steer)
 
-         # vehicle state --> topic msg
+        # vehicle state --> topic msg
         msg = get_ros_msg(state.x, state.y, state.yaw, state.v, id=id)
 
+        s, d = get_frenet(state.x, state.y, mapx, mapy);
+        x, y, yaw_road = get_cartesian(s, d, mapx, mapy, maps)
+        yawi = yaw - yaw_road
+        # s 방향 초기조건
+        si = s
+        si_d = v*np.cos(yawi)
+        si_dd = a*np.cos(yawi)
+        sf_d = TARGET_SPEED
+        sf_dd = 0
+
+        # d 방향 초기조건
+        di = d
+        di_d = v*np.sin(yawi)
+        di_dd = a*np.sin(yawi)
+        df_d = 0
+        df_dd = 0
+
+        opt_d = path[opt_ind].d[-1]
         # send tf
         tf_broadcaster.sendTransform(
             (state.x, state.y, 1.5),
@@ -678,8 +749,31 @@ if __name__ == "__main__":
             rospy.Time.now(),
             "/car_" + str(id), "/map"
         )
-
+        ma = get_traj_msg(path ,opt_ind)
+       # markerArray = MarkerArray()
+       # id_number = 0 
+       # for j in range(len(path)):
+       #     marker = Marker()
+       #     marker.header.frame_id = "/map"
+       #     marker.header.stamp = rospy.Time.now()
+       #     marker.type = marker.POINTS
+       #     marker.id = id_number
+       #     id_number+=1
+       #     marker.scale.x = 1
+       #     marker.scale.y = 1
+       #     marker.scale.z = 1
+       #     marker.color.r = 1.0
+       #     marker.color.g = 1.0
+       #     marker.color.b = 0.0
+       #     marker.color.a = 1
+       #     for i in range(len(path[opt_ind].x)):
+       #         p = Point()
+       #         p.x = path[opt_ind].x[i]
+       #         p.y = path[opt_ind].y[i]
+       #         marker.points.append(p)
+       #          
+       #     markerArray.markers.append(marker)
         # publish vehicle state in ros msg
         object_pub.publish(msg["object_msg"])
-
+        line_pub.publish(ma)
         r.sleep()

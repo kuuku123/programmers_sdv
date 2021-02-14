@@ -1,0 +1,13 @@
+<launch>
+    
+    <!-- rviz display -->
+    <node name="rviz_visualizer" pkg="rviz" type="rviz" required="true" 
+                args="-d /home/tonycar/programmers_sdv/project_ws/rviz.config.rviz"/>
+    
+
+
+    <node name="map_server" pkg="map_server" type="map_visualizer.py"/>
+    <node name="parking_car" pkg="obstacles" type="parking_car.py"/>
+    <node name="collision_check" pkg="obstacles" type="collision_check_with_visualizing_car.py"/>
+    <node name="cv_agents" pkg="cv_agents" type="spawn_agent.py" output="screen"/>
+</launch>

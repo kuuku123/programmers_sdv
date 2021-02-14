@@ -59,6 +59,7 @@ DF_SET = np.array([LANE_WIDTH/2, -LANE_WIDTH/2])
 
 def next_waypoint(x, y, mapx, mapy):
     closest_wp = get_closest_waypoints(x, y, mapx, mapy)
+    print(closest_wp,"cwp")
     map_vec = [mapx[closest_wp + 1] - mapx[closest_wp], mapy[closest_wp + 1] - mapy[closest_wp]]
     ego_vec = [x - mapx[closest_wp], y - mapy[closest_wp]]
 
@@ -465,9 +466,9 @@ def plot_car(x, y, yaw, steer=0.0, cabcolor="-r", truckcolor="-k"):  # pragma: n
 
 def test():
     # map waypoints
-
     mapx = map_center[:,0]
     mapy = map_center[:,1]
+    print(len(mapx))
     # static obstacles
     obs = np.array([[3.0, WIDTH],
                    [5, -WIDTH],
