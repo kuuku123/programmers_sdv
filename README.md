@@ -21,3 +21,4 @@ Marker를 통해서 현재가고있는 경로와 가능한 경로를 보이게 �
 넓히지 않은경우 no_solution 이 많이 발생하였습니다.
 
 6. 아래에 주석처리된 markerArray = MarkerArray()로 경로들을 표현을 할 수 있지만 변성목님이 함수로 깔끔하게 정리했길레 그것으로 대체하였습니다.
+![Screenshot](capture.png)
