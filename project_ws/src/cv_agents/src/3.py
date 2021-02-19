@@ -32,14 +32,14 @@ L = 2.6
 dt = 0.1
 
 k = 0.5  # control gain
-V_MAX = 20      # maximum velocity [m/s]
+V_MAX = 20000      # maximum velocity [m/s]
 ACC_MAX = 2000 # maximum acceleration [m/ss]
 K_MAX = 100000     # maximum curvature [1/m]
 
-TARGET_SPEED = 8 # target speed [m/s] 6
-LANE_WIDTH = 3.1  # lane width [m] 3.1
+TARGET_SPEED = 24 # target speed [m/s] 6
+LANE_WIDTH = 3.4  # lane width [m] 3.1
 
-COL_CHECK = 1.9 # collision check distance [m] 1.9
+COL_CHECK = 2.3 # collision check distance [m] 1.9
 
 MIN_T = 1 # minimum terminal time [s]
 MAX_T = 3 # maximum terminal time [s] 3
@@ -50,6 +50,7 @@ DT = 0.1 # timestep for update
 K_J = 0.1 # weight for jerk
 K_T = 0.1 # weight for terminal time
 K_D = 1.0 # weight for consistency
+K_D2 = 20.0
 K_V = 1.0 # weight for getting to target speed
 K_LAT = 1.0 # weight for lateral direction
 K_LON = 1.0 # weight for longitudinal direction
@@ -67,7 +68,7 @@ TREAD = 0.07  # [m]
 WB = 0.22  # [m]
 
 # lateral planning 시 terminal position condition 후보  (양 차선 중앙)
-DF_SET = np.array([LANE_WIDTH/2, -LANE_WIDTH/2])
+DF_SET = np.array([LANE_WIDTH  ,LANE_WIDTH/2,LANE_WIDTH/4,0, -LANE_WIDTH/2,LANE_WIDTH/4, -LANE_WIDTH])
 
 
 def get_traj_msg(paths, opt_ind):
@@ -353,11 +354,12 @@ def calc_frenet_paths(si, si_d, si_dd, sf_d, sf_dd, di, di_d, di_dd, df_d, df_dd
 
             # cost for consistency
             d_diff = (tfp.d[-1] - opt_d) ** 2
+            d_diff2 = tfp.d[-1]**2
             # cost for target speed
             v_diff = (TARGET_SPEED - tfp.s_d[-1]) ** 2
 
             # lateral cost
-            tfp.c_lat = K_J * J_lat + K_T * T + K_D * d_diff
+            tfp.c_lat = K_J * J_lat + K_T * T + K_D * d_diff+ K_D2 * d_diff2
             # logitudinal cost
             tfp.c_lon = K_J * J_lon + K_T * T + K_V * v_diff
 
