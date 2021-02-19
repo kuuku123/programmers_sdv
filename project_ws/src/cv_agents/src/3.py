@@ -267,7 +267,8 @@ class QuarticPolynomial:
         v = self.a1 + 2*self.a2*t + 3*self.a3*t**2 + 4*self.a4*t**3
         return v
 
-    # calculate acceleration info.  def calc_acc(self, t):
+    # calculate acceleration info.  
+    def calc_acc(self, t):
         a = 2*self.a2 + 6*self.a3*t + 12*self.a4*t**2
         return a
 
